@@ -821,6 +821,92 @@ LogicalResult DotGeneralOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// FftOp
+//===----------------------------------------------------------------------===//
+
+// We intend to verify the following properties
+// P1. 1<= rank <= 3
+// P2. operand shape dimensions agree with fft_length for the given fft_type ie.
+// P3. Element types agree with fft_type
+
+LogicalResult FftOp::verify() {
+  // P1.
+  auto fft_rank = fft_length().size();
+  if (!(fft_rank <= 3 && fft_rank >= 1)) {
+    return emitOpError() << "rank must be between 1 and 3, but got " << fft_rank
+                         << ".";
+  }
+
+  // P2.
+  auto operand_type = operand().getType().dyn_cast<RankedTensorType>();
+  if (!operand_type) return success();
+  auto operand_shape = operand_type.getShape();
+  if (fft_type() == "RFFT") {
+    auto shape_back = operand_shape.take_back(fft_rank);
+    for (auto [in_dim, fft_dim] :
+         llvm::zip(shape_back, fft_length().getValues<int64_t>())) {
+      if (in_dim != fft_dim) {
+        // TODO: op error or just error?
+        return emitOpError()
+               << "RFFT requires innermost dimensions match fft_length. Got: "
+               << operand_shape << " but wanted " << fft_length() << ".";
+      }
+    }
+  }
+  if (fft_type() == "IRFFT") {
+    auto shape_back = operand_shape.take_back(fft_rank).drop_back();
+    for (auto [in_dim, fft_dim] :
+         llvm::zip(shape_back, fft_length().getValues<int64_t>())) {
+      if (in_dim != fft_dim) {
+        return emitOpError() << "IRFFT requires non-final innermost dimensions "
+                                "match fft_length. Got: "
+                             << operand_shape << " but wanted " << fft_length()
+                             << ", and " << in_dim << " != " << fft_dim << ".";
+      }
+    }
+    if (operand_shape[operand_shape.size() - 1] !=
+        fft_length().getValues<int64_t>()[fft_rank - 1] / 2 + 1)
+      return emitOpError() << "IRFFT requires nonfinal dimensions match "
+                              "fft_length[-1]/2+1. Got: "
+                           << operand_shape << " but fft_length is "
+                           << fft_length() << ".";
+    return success();
+  }
+
+  // P3. Element type agreement
+  // FFT : C -> C
+  // IFF : C -> C
+  // RFFT : R -> C
+  // IRFFT : C -> R
+  auto result_type = getResult().getType().dyn_cast<RankedTensorType>();
+  if (!result_type) return success();
+  if (fft_type() == "RFFT") {
+    if (operand_type.getElementType().isa<ComplexType>()) {
+      return emitOpError() << "RFFT takes a real tensor as input, but given, "
+                           << operand_type << ".";
+    }
+  } else if (!operand_type.getElementType().isa<ComplexType>()) {
+    return emitOpError() << fft_type()
+                         << " takes a real tensor as input, but given, "
+                         << operand_type << ".";
+  }
+
+  if (fft_type() == "IRFFT") {
+    if (result_type.getElementType().isa<ComplexType>()) {
+      return emitOpError()
+             << "IRFFT produces a complex tensor as input, but given, "
+             << result_type << ".";
+    }
+  } else if (!result_type.getElementType().isa<ComplexType>()) {
+    return emitOpError() << fft_type()
+                         << " produces a complex tensor as input, but given, "
+                         << result_type << ".";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // GatherOp
 //===----------------------------------------------------------------------===//
 
